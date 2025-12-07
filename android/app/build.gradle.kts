@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "com.example.cv_training_app"
+    namespace = "com.example.robodu_cvml"
     compileSdk = 34
     
     defaultConfig {
-        applicationId = "com.example.cv_training_app"
+        applicationId = "com.example.robodu_cvml"
         minSdk = flutter.minSdkVersion
         targetSdk = 34
         versionCode = 1
@@ -40,4 +40,5 @@ dependencies {
     implementation("org.tensorflow:tensorflow-lite-support:0.4.3")
     implementation("org.tensorflow:tensorflow-lite-select-tf-ops:2.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    
 }

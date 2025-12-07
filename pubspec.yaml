@@ -1,4 +1,4 @@
-name: cv_training_app
+name: robodu_cvml
 description: CV Training & Inference App
 publish_to: 'none'
 version: 1.0.0+1
@@ -22,3 +22,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/model.tflite
+    - assets/robodu.tflite

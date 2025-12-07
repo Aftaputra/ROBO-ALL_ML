@@ -1,4 +1,4 @@
-package com.example.cv_training_app
+package com.example.robodu_cvml
 
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -6,18 +6,24 @@ import io.flutter.plugin.common.MethodChannel
 import kotlinx.coroutines.*
 
 class MainActivity: FlutterActivity() {
-    private val CHANNEL = "cv_training/model"
-    private var helper: TransferLearningHelper? = null
+    private val CV_CHANNEL = "cv_training/model"
+    private val AUDIO_CHANNEL = "audio_keyword/model"
+    
+    private var cvHelper: TransferLearningHelper? = null
+    private var audioHelper: AudioKeywordHelper? = null
     private var trainingJob: Job? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+        // ==========================================
+        // CV CHANNEL (EXISTING - WORKING)
+        // ==========================================
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CV_CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "initModel" -> {
                     try {
-                        helper = TransferLearningHelper(context, 2)
+                        cvHelper = TransferLearningHelper(context, 2)
                         result.success(true)
                     } catch (e: Exception) {
                         result.error("INIT_ERROR", e.message, null)
@@ -30,8 +36,8 @@ class MainActivity: FlutterActivity() {
                         val className = call.argument<String>("className")
                         
                         if (imageData != null && className != null) {
-                            helper?.addSample(imageData, className)
-                            result.success(helper?.getSampleCount() ?: 0)
+                            cvHelper?.addSample(imageData, className)
+                            result.success(cvHelper?.getSampleCount() ?: 0)
                         } else {
                             result.error("INVALID_ARGS", "Missing data", null)
                         }
@@ -46,7 +52,7 @@ class MainActivity: FlutterActivity() {
                         
                         trainingJob = CoroutineScope(Dispatchers.IO).launch {
                             try {
-                                val trainingResult = helper?.startTraining(epochs)
+                                val trainingResult = cvHelper?.startTraining(epochs)
                                 
                                 withContext(Dispatchers.Main) {
                                     if (trainingResult != null && trainingResult.loss >= 0) {
@@ -76,7 +82,7 @@ class MainActivity: FlutterActivity() {
                         val imageData = call.argument<List<Double>>("imageData")?.map { it.toFloat() }?.toFloatArray()
                         
                         if (imageData != null) {
-                            val output = helper?.classify(imageData)
+                            val output = cvHelper?.classify(imageData)
                             result.success(output?.toList())
                         } else {
                             result.error("INVALID_ARGS", "Missing data", null)
@@ -86,22 +92,20 @@ class MainActivity: FlutterActivity() {
                     }
                 }
                 
-                // NEW: Reset model
                 "resetModel" -> {
                     try {
-                        helper?.resetModel(2)
+                        cvHelper?.resetModel(2)
                         result.success(true)
                     } catch (e: Exception) {
                         result.error("RESET_ERROR", e.message, null)
                     }
                 }
                 
-                // NEW: Get samples info
                 "getSamplesInfo" -> {
                     try {
-                        val samplesPerClass = helper?.getSamplesPerClass()
+                        val samplesPerClass = cvHelper?.getSamplesPerClass()
                         result.success(mapOf(
-                            "total" to (helper?.getSampleCount() ?: 0),
+                            "total" to (cvHelper?.getSampleCount() ?: 0),
                             "perClass" to samplesPerClass
                         ))
                     } catch (e: Exception) {
@@ -112,11 +116,57 @@ class MainActivity: FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+        
+        // ==========================================
+        // AUDIO CHANNEL (NEW)
+        // ==========================================
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, AUDIO_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "initModel" -> {
+                    try {
+                        audioHelper = AudioKeywordHelper(context) { keyword, confidence, inferenceTime ->
+                            CoroutineScope(Dispatchers.Main).launch {
+                                MethodChannel(flutterEngine.dartExecutor.binaryMessenger, AUDIO_CHANNEL)
+                                    .invokeMethod("onKeywordDetected", mapOf(
+                                        "keyword" to keyword,
+                                        "confidence" to confidence.toDouble(),
+                                        "inferenceTime" to inferenceTime.toDouble()
+                                    ))
+                            }
+                        }
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("INIT_ERROR", e.message, null)
+                    }
+                }
+                
+                "startListening" -> {
+                    try {
+                        audioHelper?.startListening()
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("START_ERROR", e.message, null)
+                    }
+                }
+                
+                "stopListening" -> {
+                    try {
+                        audioHelper?.stopListening()
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("STOP_ERROR", e.message, null)
+                    }
+                }
+                
+                else -> result.notImplemented()
+            }
+        }
     }
 
     override fun onDestroy() {
         trainingJob?.cancel()
-        helper?.close()
+        cvHelper?.close()
+        audioHelper?.close()
         super.onDestroy()
     }
 }

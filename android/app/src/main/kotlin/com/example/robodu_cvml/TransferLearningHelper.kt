@@ -1,4 +1,4 @@
-package com.example.cv_training_app
+package com.example.robodu_cvml
 
 import android.content.Context
 import android.util.Log
