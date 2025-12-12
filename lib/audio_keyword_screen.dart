@@ -1,14 +1,11 @@
-import 'dart:async';
-import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'audio_classifier.dart';  // dari roboice
 
 class AppColors {
   static const Color primary = Color(0xFF4DB6AC);
   static const Color primaryDark = Color(0xFF26A69A);
   static const Color accent = Color(0xFF80CBC4);
-  static const Color background = Color(0xFFF5F5F5);
   static const Color cardBackground = Color(0xFFE0F2F1);
   static const Color textPrimary = Color(0xFF212121);
   static const Color textSecondary = Color(0xFF757575);
@@ -24,148 +21,128 @@ class AudioKeywordScreen extends StatefulWidget {
   State<AudioKeywordScreen> createState() => _AudioKeywordScreenState();
 }
 
-class _AudioKeywordScreenState extends State<AudioKeywordScreen> with TickerProviderStateMixin {
-  static const platform = MethodChannel('audio_keyword/model');
+class _AudioKeywordScreenState extends State<AudioKeywordScreen> {
+  AudioClassifier? _classifier;
   
+  bool _isInitialized = false;
   bool _isListening = false;
-  bool _modelLoaded = false;
-  String _lastKeyword = '';
-  double _lastConfidence = 0.0;
-  double _lastInferenceTime = 0.0;
+  String _command = "N/A";
+  String _statusMessage = "Initializing...";
+  double _confidence = 0.0;
+  double _inferenceTime = 0.0;
   
+  final List<Map<String, dynamic>> _history = [];
   final List<String> _consoleMessages = [];
   final ScrollController _consoleScroll = ScrollController();
-  bool _showConsole = true;
-  
-  late AnimationController _waveController;
-  final List<double> _waveHeights = List.generate(40, (i) => 0.3);
-  Timer? _waveTimer;
-  
-  final List<String> _keywords = ['robodu', 'perkenalan', 'kanan', 'kiri', 'maju', 'mundur'];
-  
-  final Map<String, Color> _keywordColors = {
-    'robodu': AppColors.primary,
-    'perkenalan': Colors.purple,
-    'kanan': Colors.blue,
-    'kiri': Colors.orange,
-    'maju': AppColors.success,
-    'mundur': AppColors.error,
-  };
 
   @override
   void initState() {
     super.initState();
-    _waveController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 500),
-    )..repeat(reverse: true);
-    _init();
+    _initAudio();
   }
 
-  Future<void> _init() async {
-    _addConsoleLog('Initializing audio keyword spotting...');
-    await Permission.microphone.request();
-    await _loadModel();
-  }
+  Future<void> _initAudio() async {
+    _addConsoleLog('🚀 Initializing audio model...');
+    
+    // Request permission
+    final micStatus = await Permission.microphone.request();
+    if (micStatus != PermissionStatus.granted) {
+      setState(() {
+        _statusMessage = "Microphone permission denied";
+        _isInitialized = false;
+      });
+      _addConsoleLog('❌ Microphone permission denied');
+      return;
+    }
+    _addConsoleLog('✅ Microphone permission granted');
 
-  Future<void> _loadModel() async {
     try {
-      final result = await platform.invokeMethod('initModel');
-      if (mounted) {
-        setState(() => _modelLoaded = result == true);
-        _addConsoleLog('Model loaded successfully');
-      }
+      _classifier = AudioClassifier(
+        onPrediction: (command, predictions, inferenceTime) {
+          if (command != "N/A") {
+            final topPred = predictions.isNotEmpty ? predictions[0] : null;
+            setState(() {
+              _command = command;
+              _confidence = topPred?.confidence ?? 0.0;
+              _inferenceTime = inferenceTime;
+              
+              _history.insert(0, {
+                'keyword': command,
+                'confidence':  _confidence,
+                'time':  DateTime.now(),
+              });
+              
+              if (_history.length > 10) _history.removeLast();
+            });
+            
+            _addConsoleLog('🎯 Detected:  $command (${(_confidence * 100).toStringAsFixed(1)}%) - ${inferenceTime.toStringAsFixed(0)}ms');
+          }
+        },
+      );
+
+      await _classifier! .initialize();
+
+      setState(() {
+        _isInitialized = true;
+        _statusMessage = "Ready - Tap to start";
+      });
+      
+      _addConsoleLog('✅ Audio model ready');
     } catch (e) {
-      if (mounted) _addConsoleLog('Model error: $e');
+      setState(() {
+        _statusMessage = "Error:  $e";
+        _isInitialized = false;
+      });
+      _addConsoleLog('❌ Failed to initialize:  $e');
     }
   }
 
   void _addConsoleLog(String message) {
-    if (!mounted) return;
-    
     setState(() {
       _consoleMessages.add('[${DateTime.now().toString().substring(11, 19)}] $message');
-      if (_consoleMessages.length > 50) _consoleMessages.removeAt(0);
+      if (_consoleMessages.length > 30) _consoleMessages.removeAt(0);
     });
     
     Future.delayed(const Duration(milliseconds: 100), () {
-      if (mounted && _consoleScroll.hasClients) {
+      if (_consoleScroll.hasClients) {
         _consoleScroll.animateTo(
           _consoleScroll.position.maxScrollExtent,
           duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOut,
+          curve: Curves. easeOut,
         );
       }
     });
   }
 
   Future<void> _toggleListening() async {
-    if (_isListening) {
-      await _stopListening();
-    } else {
-      await _startListening();
-    }
-  }
+    if (! _isInitialized || _classifier == null) return;
 
-  Future<void> _startListening() async {
     try {
-      await platform.invokeMethod('startListening');
-      if (mounted) {
-        setState(() => _isListening = true);
-        _addConsoleLog('Listening started...');
-      }
-      
-      _waveTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
-        if (_isListening && mounted) {
-          setState(() {
-            for (int i = 0; i < _waveHeights.length; i++) {
-              _waveHeights[i] = 0.2 + (0.8 * (i % 3 == 0 ? 0.5 : 1.0)) * (0.5 + 0.5 * math.sin(DateTime.now().millisecond / 100 + i));
-            }
-          });
-        }
-      });
-      
-      platform.setMethodCallHandler((call) async {
-        if (call.method == 'onKeywordDetected' && mounted) {
-          final keyword = call.arguments['keyword'] as String;
-          final confidence = (call.arguments['confidence'] as num).toDouble();
-          final inferenceTime = (call.arguments['inferenceTime'] as num).toDouble();
-          
-          setState(() {
-            _lastKeyword = keyword;
-            _lastConfidence = confidence;
-            _lastInferenceTime = inferenceTime;
-          });
-          
-          _addConsoleLog('$keyword (${(confidence * 100).toStringAsFixed(1)}%) | ${inferenceTime.toStringAsFixed(1)}ms');
-        }
-      });
-      
-    } catch (e) {
-      if (mounted) _addConsoleLog('Start listening error: $e');
-    }
-  }
-
-  Future<void> _stopListening() async {
-    try {
-      await platform.invokeMethod('stopListening');
-      _waveTimer?.cancel();
-      
-      if (mounted) {
-        setState(() => _isListening = false);
-        _addConsoleLog('Listening stopped');
+      if (_isListening) {
+        await _classifier!.stopListening();
+        setState(() {
+          _isListening = false;
+          _statusMessage = "Stopped - Tap to start";
+          _command = "N/A";
+        });
+        _addConsoleLog('🛑 Stopped listening');
+      } else {
+        await _classifier!.startListening();
+        setState(() {
+          _isListening = true;
+          _statusMessage = "Listening... ";
+        });
+        _addConsoleLog('🎤 Started listening');
       }
     } catch (e) {
-      if (mounted) _addConsoleLog('Stop listening error: $e');
+      _addConsoleLog('❌ Error:  $e');
     }
   }
 
   @override
   void dispose() {
-    _waveTimer?.cancel();
-    _waveController.dispose();
+    _classifier?. dispose();
     _consoleScroll.dispose();
-    _stopListening();
     super.dispose();
   }
 
@@ -178,10 +155,9 @@ class _AudioKeywordScreenState extends State<AudioKeywordScreen> with TickerProv
           Container(
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                begin: Alignment.topCenter,
+                begin:  Alignment.topCenter,
                 end: Alignment.bottomCenter,
                 colors: [
-                  Colors.black,
                   AppColors.primaryDark.withOpacity(0.3),
                   Colors.black,
                 ],
@@ -191,19 +167,18 @@ class _AudioKeywordScreenState extends State<AudioKeywordScreen> with TickerProv
           SafeArea(
             child: Column(
               children: [
-                _buildHeader(),
+                _buildTopBar(),
                 Expanded(child: _buildMainContent()),
-                if (_showConsole) _buildConsole(),
+                _buildConsole(),
               ],
             ),
           ),
-          _buildFloatingControls(),
         ],
       ),
     );
   }
 
-  Widget _buildHeader() {
+  Widget _buildTopBar() {
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Row(
@@ -213,62 +188,29 @@ class _AudioKeywordScreenState extends State<AudioKeywordScreen> with TickerProv
             child: Container(
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.7),
+                color: Colors.black. withOpacity(0.5),
                 shape: BoxShape.circle,
                 border: Border.all(color: AppColors.accent, width: 2),
               ),
-              child: const Icon(Icons.arrow_back, color: AppColors.accent, size: 20),
+              child:  const Icon(Icons.arrow_back, color: AppColors.accent, size: 20),
             ),
           ),
           const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Voice Commands',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                  ),
-                ),
-                Text(
-                  _modelLoaded ? 'Model Ready' : 'Loading...',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: _modelLoaded ? AppColors.success : AppColors.warning,
-                  ),
-                ),
-              ],
-            ),
-          ),
+          const Text('Voice Command', style: TextStyle(color:  Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+          const Spacer(),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
-              color: _isListening ? AppColors.success : Colors.grey,
+              color: _isInitialized ? AppColors.success. withOpacity(0.2) : AppColors.error.withOpacity(0.2),
               borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: _isInitialized ? AppColors. success : AppColors.error, width: 2),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Container(
-                  width: 8,
-                  height: 8,
-                  decoration: const BoxDecoration(
-                    color: Colors.white,
-                    shape: BoxShape.circle,
-                  ),
-                ),
+                Icon(_isInitialized ? Icons.check_circle : Icons.error, color: _isInitialized ? AppColors.success : AppColors.error, size: 16),
                 const SizedBox(width: 6),
-                Text(
-                  _isListening ? 'LIVE' : 'OFF',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
+                Text(_isInitialized ? 'Ready' : 'Error', style: TextStyle(color: _isInitialized ? AppColors.success : AppColors.error, fontSize: 12, fontWeight: FontWeight.bold)),
               ],
             ),
           ),
@@ -277,272 +219,122 @@ class _AudioKeywordScreenState extends State<AudioKeywordScreen> with TickerProv
     );
   }
 
-Widget _buildMainContent() {
-  return SingleChildScrollView(  // TAMBAH INI
-    child: ConstrainedBox(  // TAMBAH INI
-      constraints: BoxConstraints(
-        minHeight: MediaQuery.of(context).size.height - 250,  // TAMBAH INI
-      ),
+  Widget _buildMainContent() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisAlignment: MainAxisAlignment. center,
         children: [
-          _buildWaveform(),
-          const SizedBox(height: 40),
+          Text(_statusMessage, style: const TextStyle(color: AppColors.accent, fontSize: 14)),
+          const SizedBox(height: 24),
           GestureDetector(
-            onTap: _toggleListening,
-            child: Container(
+            onTap: _isInitialized ? _toggleListening :  null,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
               width: 120,
               height: 120,
               decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: _isListening ? AppColors.success : AppColors.primary,
-                boxShadow: _isListening
-                    ? [
-                        BoxShadow(
-                          color: AppColors.success.withOpacity(0.5),
-                          blurRadius: 30,
-                          spreadRadius: 10,
-                        )
-                      ]
-                    : [],
+                color: _isListening ? AppColors.error. withOpacity(0.2) : AppColors.primary.withOpacity(0.2),
+                shape: BoxShape. circle,
+                border: Border. all(color: _isListening ? AppColors.error : AppColors.primary, width: 4),
+                boxShadow: _isListening ? [BoxShadow(color: AppColors.error. withOpacity(0.5), blurRadius: 20, spreadRadius: 5)] : [],
               ),
-              child: Icon(
-                _isListening ? Icons.mic : Icons.mic_none,
-                size: 60,
-                color: Colors.white,
-              ),
+              child: Icon(_isListening ? Icons.stop : Icons.mic, color: _isListening ? AppColors.error : AppColors.primary, size: 50),
+            ),
+          ),
+          const SizedBox(height:  32),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: AppColors. cardBackground. withOpacity(0.1),
+              borderRadius: BorderRadius. circular(16),
+              border: Border.all(color: _command != "N/A" ? AppColors.success : AppColors.accent. withOpacity(0.3), width: 2),
+            ),
+            child: Column(
+              children: [
+                const Text('Detected Command', style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+                const SizedBox(height: 8),
+                Text(_command. toUpperCase(), style: TextStyle(color: _command != "N/A" ?  AppColors.success : Colors.white54, fontSize: 36, fontWeight: FontWeight.bold)),
+                if (_command != "N/A") ...[
+                  const SizedBox(height: 8),
+                  Text('${(_confidence * 100).toStringAsFixed(1)}% • ${_inferenceTime.toStringAsFixed(0)}ms', style: const TextStyle(color: AppColors. accent, fontSize: 14)),
+                ],
+              ],
             ),
           ),
           const SizedBox(height: 24),
-          Text(
-            _isListening ? 'Listening...' : 'Tap to start',
-            style: TextStyle(
-              fontSize: 18,
-              color: Colors.white.withOpacity(0.8),
-              fontWeight: FontWeight.w300,
-            ),
-          ),
-          const SizedBox(height: 40),
-          if (_lastKeyword.isNotEmpty) _buildLastDetection(),
-          const SizedBox(height: 32),
-          _buildKeywordsGrid(),
-          const SizedBox(height: 20), // TAMBAH padding bawah
+          if (_history.isNotEmpty) _buildHistory(),
         ],
       ),
-    ),
-  );
-}
-  Widget _buildWaveform() {
-    return Container(
+    );
+  }
+
+  Widget _buildHistory() {
+    return SizedBox(
       height: 80,
-      padding: const EdgeInsets.symmetric(horizontal: 32),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: List.generate(40, (i) {
-          return AnimatedContainer(
-            duration: const Duration(milliseconds: 100),
-            width: 3,
-            height: _isListening ? _waveHeights[i] * 80 : 20,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        itemCount: _history.length,
+        itemBuilder: (context, index) {
+          final item = _history[index];
+          final isRecent = index == 0;
+          return Container(
+            margin: const EdgeInsets.only(right: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             decoration: BoxDecoration(
-              color: AppColors.accent.withOpacity(0.8),
-              borderRadius: BorderRadius.circular(2),
+              color: isRecent ? AppColors.primary.withOpacity(0.2) : Colors.white. withOpacity(0.05),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: isRecent ? AppColors.primary :  AppColors.accent. withOpacity(0.3), width: isRecent ? 2 : 1),
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(item['keyword']. toString().toUpperCase(), style: TextStyle(color: isRecent ?  AppColors.primary : Colors.white70, fontSize: 14, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 4),
+                Text('${((item['confidence'] as double) * 100).toStringAsFixed(0)}%', style: TextStyle(color: isRecent ? AppColors.accent : Colors.white38, fontSize: 11)),
+              ],
             ),
           );
-        }),
-      ),
-    );
-  }
-
-  Widget _buildLastDetection() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-      margin: const EdgeInsets.symmetric(horizontal: 32),
-      decoration: BoxDecoration(
-        color: AppColors.cardBackground.withOpacity(0.9),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: _keywordColors[_lastKeyword] ?? AppColors.accent,
-          width: 2,
-        ),
-      ),
-      child: Column(
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                Icons.check_circle,
-                color: _keywordColors[_lastKeyword],
-                size: 24,
-              ),
-              const SizedBox(width: 12),
-              Text(
-                _lastKeyword.toUpperCase(),
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                  color: _keywordColors[_lastKeyword],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                'Confidence: ${(_lastConfidence * 100).toStringAsFixed(1)}%',
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: AppColors.textSecondary,
-                ),
-              ),
-              const SizedBox(width: 16),
-              Text(
-                '${_lastInferenceTime.toStringAsFixed(1)}ms',
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: AppColors.textSecondary,
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildKeywordsGrid() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 32),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Keywords',
-            style: TextStyle(
-              fontSize: 14,
-              color: Colors.white.withOpacity(0.7),
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: _keywords.map((keyword) {
-              final isActive = _lastKeyword == keyword;
-              final color = _keywordColors[keyword] ?? AppColors.accent;
-
-              return Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                decoration: BoxDecoration(
-                  color: isActive
-                      ? color.withOpacity(0.3)
-                      : Colors.white.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: isActive ? color : Colors.white.withOpacity(0.3),
-                    width: isActive ? 2 : 1,
-                  ),
-                ),
-                child: Text(
-                  keyword,
-                  style: TextStyle(
-                    color: isActive ? color : Colors.white.withOpacity(0.7),
-                    fontSize: 12,
-                    fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
-                  ),
-                ),
-              );
-            }).toList(),
-          ),
-        ],
+        },
       ),
     );
   }
 
   Widget _buildConsole() {
     return Container(
-      height: 150,
+      height: 120,
       margin: const EdgeInsets.all(16),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.85),
+        color: Colors.black.withOpacity(0.7),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.accent, width: 2),
+        border: Border.all(color: AppColors.accent. withOpacity(0.5), width: 1),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Icon(Icons.terminal, color: AppColors.accent, size: 16),
+              const Icon(Icons.terminal, color: AppColors.accent, size: 14),
               const SizedBox(width: 6),
-              const Text(
-                'Console',
-                style: TextStyle(
-                  color: AppColors.accent,
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+              const Text('Console', style: TextStyle(color: AppColors.accent, fontSize: 11, fontWeight: FontWeight.bold)),
               const Spacer(),
               GestureDetector(
-                onTap: () => setState(() {
-                  _consoleMessages.clear();
-                  _addConsoleLog('Console cleared');
-                }),
-                child: const Icon(Icons.clear_all, color: AppColors.accent, size: 16),
+                onTap: () => setState(() => _consoleMessages.clear()),
+                child: const Icon(Icons.clear_all, color: AppColors.accent, size: 14),
               ),
             ],
           ),
-          const Divider(color: AppColors.accent, height: 16),
+          const Divider(color: AppColors. accent, height: 12),
           Expanded(
             child: ListView.builder(
               controller: _consoleScroll,
               itemCount: _consoleMessages.length,
-              itemBuilder: (ctx, i) {
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
-                  child: Text(
-                    _consoleMessages[i],
-                    style: const TextStyle(
-                      color: AppColors.accent,
-                      fontSize: 10,
-                      fontFamily: 'monospace',
-                    ),
-                  ),
-                );
-              },
+              itemBuilder: (ctx, i) => Text(_consoleMessages[i], style:  const TextStyle(color: AppColors.accent, fontSize: 9, fontFamily: 'monospace')),
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildFloatingControls() {
-    return Positioned(
-      right: 16,
-      bottom: _showConsole ? 180 : 30,
-      child: GestureDetector(
-        onTap: () => setState(() => _showConsole = !_showConsole),
-        child: Container(
-          width: 48,
-          height: 48,
-          decoration: BoxDecoration(
-            color: Colors.black.withOpacity(0.7),
-            shape: BoxShape.circle,
-            border: Border.all(color: AppColors.accent, width: 2),
-          ),
-          child: Icon(
-            _showConsole ? Icons.keyboard_arrow_down : Icons.terminal,
-            color: AppColors.accent,
-            size: 24,
-          ),
-        ),
       ),
     );
   }

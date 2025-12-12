@@ -12,6 +12,8 @@ dependencies:
   camera: ^0.10.5+9
   permission_handler: ^11.3.0
   image: ^4.1.7
+  flutter_sound: ^9.30.0
+  scidart: ^0.0.2-dev.12
 
 dev_dependencies:
   flutter_test:

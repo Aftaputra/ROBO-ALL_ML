@@ -4,22 +4,24 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import kotlinx.coroutines.*
+import org.tensorflow.lite. Interpreter
+import java.io.File
+import java.nio.ByteBuffer
+import java.nio. ByteOrder
 
-class MainActivity: FlutterActivity() {
+class MainActivity:  FlutterActivity() {
     private val CV_CHANNEL = "cv_training/model"
-    private val AUDIO_CHANNEL = "audio_keyword/model"
+    private val AUDIO_CHANNEL = "com.robodu.tflite"
     
     private var cvHelper: TransferLearningHelper? = null
-    private var audioHelper: AudioKeywordHelper? = null
+    private var audioInterpreter:  Interpreter? = null
     private var trainingJob: Job? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         
-        // ==========================================
-        // CV CHANNEL (EXISTING - WORKING)
-        // ==========================================
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CV_CHANNEL).setMethodCallHandler { call, result ->
+        // CV CHANNEL
+        MethodChannel(flutterEngine.dartExecutor. binaryMessenger, CV_CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "initModel" -> {
                     try {
@@ -32,17 +34,17 @@ class MainActivity: FlutterActivity() {
                 
                 "addSample" -> {
                     try {
-                        val imageData = call.argument<List<Double>>("imageData")?.map { it.toFloat() }?.toFloatArray()
+                        val imageData = call.argument<List<Double>>("imageData")?.map { it.toFloat() }?. toFloatArray()
                         val className = call.argument<String>("className")
                         
                         if (imageData != null && className != null) {
                             cvHelper?.addSample(imageData, className)
-                            result.success(cvHelper?.getSampleCount() ?: 0)
+                            result. success(cvHelper?.getSampleCount() ?: 0)
                         } else {
                             result.error("INVALID_ARGS", "Missing data", null)
                         }
                     } catch (e: Exception) {
-                        result.error("ADD_SAMPLE_ERROR", e.message, null)
+                        result.error("ADD_SAMPLE_ERROR", e. message, null)
                     }
                 }
                 
@@ -57,7 +59,7 @@ class MainActivity: FlutterActivity() {
                                 withContext(Dispatchers.Main) {
                                     if (trainingResult != null && trainingResult.loss >= 0) {
                                         result.success(mapOf(
-                                            "loss" to trainingResult.loss.toDouble(),
+                                            "loss" to trainingResult.loss. toDouble(),
                                             "epochs" to epochs,
                                             "message" to trainingResult.message,
                                             "samplesPerClass" to trainingResult.samplesPerClass
@@ -68,11 +70,11 @@ class MainActivity: FlutterActivity() {
                                 }
                             } catch (e: Exception) {
                                 withContext(Dispatchers.Main) {
-                                    result.error("TRAIN_ERROR", e.message, null)
+                                    result.error("TRAIN_ERROR", e. message, null)
                                 }
                             }
                         }
-                    } catch (e: Exception) {
+                    } catch (e:  Exception) {
                         result.error("TRAIN_ERROR", e.message, null)
                     }
                 }
@@ -83,7 +85,7 @@ class MainActivity: FlutterActivity() {
                         
                         if (imageData != null) {
                             val output = cvHelper?.classify(imageData)
-                            result.success(output?.toList())
+                            result.success(output?. toList())
                         } else {
                             result.error("INVALID_ARGS", "Missing data", null)
                         }
@@ -117,45 +119,55 @@ class MainActivity: FlutterActivity() {
             }
         }
         
-        // ==========================================
-        // AUDIO CHANNEL (NEW)
-        // ==========================================
+        // AUDIO CHANNEL
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, AUDIO_CHANNEL).setMethodCallHandler { call, result ->
-            when (call.method) {
-                "initModel" -> {
-                    try {
-                        audioHelper = AudioKeywordHelper(context) { keyword, confidence, inferenceTime ->
-                            CoroutineScope(Dispatchers.Main).launch {
-                                MethodChannel(flutterEngine.dartExecutor.binaryMessenger, AUDIO_CHANNEL)
-                                    .invokeMethod("onKeywordDetected", mapOf(
-                                        "keyword" to keyword,
-                                        "confidence" to confidence.toDouble(),
-                                        "inferenceTime" to inferenceTime.toDouble()
-                                    ))
-                            }
+            when (call. method) {
+                "loadModel" -> {
+                    val modelPath = call.argument<String>("modelPath")
+                    if (modelPath != null) {
+                        try {
+                            val modelFile = File(modelPath)
+                            audioInterpreter = Interpreter(modelFile)
+                            result.success("Model loaded successfully")
+                        } catch (e: Exception) {
+                            result.error("LOAD_ERROR", e.message, null)
                         }
-                        result.success(true)
-                    } catch (e: Exception) {
-                        result.error("INIT_ERROR", e.message, null)
+                    } else {
+                        result.error("INVALID_ARGUMENT", "Model path is null", null)
                     }
                 }
                 
-                "startListening" -> {
-                    try {
-                        audioHelper?.startListening()
-                        result.success(true)
-                    } catch (e: Exception) {
-                        result.error("START_ERROR", e.message, null)
+                "runInference" -> {
+                    val input = call.argument<List<Double>>("input")
+                    if (input != null && audioInterpreter != null) {
+                        try {
+                            val inputArray = input.map { it.toFloat() }.toFloatArray()
+                            val inputBuffer = ByteBuffer.allocateDirect(inputArray.size * 4)
+                            inputBuffer.order(ByteOrder. nativeOrder())
+                            inputBuffer.asFloatBuffer().put(inputArray)
+
+                            val outputBuffer = ByteBuffer.allocateDirect(8 * 4)
+                            outputBuffer.order(ByteOrder.nativeOrder())
+
+                            audioInterpreter?.run(inputBuffer, outputBuffer)
+
+                            outputBuffer.rewind()
+                            val output = FloatArray(8)
+                            outputBuffer.asFloatBuffer().get(output)
+
+                            result.success(output. map { it.toDouble() })
+                        } catch (e:  Exception) {
+                            result. error("INFERENCE_ERROR", e.message, null)
+                        }
+                    } else {
+                        result.error("INVALID_STATE", "Input is null or model not loaded", null)
                     }
                 }
                 
-                "stopListening" -> {
-                    try {
-                        audioHelper?.stopListening()
-                        result.success(true)
-                    } catch (e: Exception) {
-                        result.error("STOP_ERROR", e.message, null)
-                    }
+                "closeModel" -> {
+                    audioInterpreter?.close()
+                    audioInterpreter = null
+                    result.success(null)
                 }
                 
                 else -> result.notImplemented()
@@ -166,7 +178,7 @@ class MainActivity: FlutterActivity() {
     override fun onDestroy() {
         trainingJob?.cancel()
         cvHelper?.close()
-        audioHelper?.close()
+        audioInterpreter?.close()
         super.onDestroy()
     }
 }
